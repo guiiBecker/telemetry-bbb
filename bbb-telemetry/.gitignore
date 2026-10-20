@@ -1,0 +1,2 @@
+*.env
+!bbb-telemetry.env.example

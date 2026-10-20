@@ -1,0 +1,29 @@
+# BigBlueButton client telemetry: server switch.
+#
+# Installed as /etc/bigbluebutton/bbb-telemetry.yml. bbb-telemetry.service reads it at boot, before
+# bbb-apps-akka and bbb-web start, and applies it. To change it on a running server, edit this file and
+# run `sudo bbb-telemetry apply --restart` (or use `bbb-telemetry on|off`).
+#
+# Disabled (the default): the OTel collector is not running, nginx has no /api/telemetry location, and
+# the client loads neither the OTLP sink nor ObserveRTC. No telemetry metrics or logs are generated.
+telemetry:
+  # Master switch: client performance metrics + the OTel collector that forwards them.
+  enabled: false
+
+  # Also send logs: a periodic p50/p95/max summary per kind, and the repro trail of the last
+  # user actions when a client error happens (at most once a minute, 5 per session).
+  logToServer: true
+
+  # ObserveRTC WebRTC quality monitor (score 0-5, RTT, detected issues, per media source).
+  # Needs telemetry.enabled. The ~68 KB gzip library is downloaded only when this is on.
+  observer:
+    enabled: false
+
+  collector:
+    # Relative paths resolve against /usr/local/share/bbb-telemetry.
+    #   otel/otel-collector-signoz.yaml  forwards to SigNoz Cloud (needs SIGNOZ_* in envFile)
+    #   otel/otel-collector-debug.yaml   prints everything to `docker logs`, sends nothing out
+    config: otel/otel-collector-signoz.yaml
+    envFile: /etc/bigbluebutton/bbb-telemetry.env
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    memory: 300m

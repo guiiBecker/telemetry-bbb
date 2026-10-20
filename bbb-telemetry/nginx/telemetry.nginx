@@ -1,0 +1,11 @@
+# /api/telemetry -> local OpenTelemetry Collector (OTLP/HTTP), authorized like /graphql
+location /api/telemetry/ {
+    auth_request /bigbluebutton/connection/checkGraphqlAuthorization;
+    auth_request_set $meeting_id $sent_http_meeting_id;
+    auth_request_set $user_id $sent_http_user_id;
+
+    client_max_body_size 128k;
+    proxy_set_header Meeting-Id $meeting_id;
+    proxy_set_header User-Id $user_id;
+    proxy_pass http://127.0.0.1:4318/;
+}

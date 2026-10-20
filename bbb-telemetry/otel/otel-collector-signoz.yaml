@@ -1,0 +1,57 @@
+# OpenTelemetry Collector for the BBB client telemetry, forwarding to SigNoz Cloud.
+#   in:  client OTLP/HTTP JSON (metrics + logs) from nginx /api/telemetry, plus Prometheus scrapes of
+#        bbb-graphql-middleware, LiveKit and bbb-webrtc-sfu on this server
+#   out: SigNoz Cloud over OTLP/gRPC, and a short line per batch in `docker logs`
+# Secrets come from the env file (never written here), see bbb-telemetry.env.example:
+#   SIGNOZ_REGION, SIGNOZ_INGESTION_KEY, BBB_TELEMETRY_ENVIRONMENT
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: bbb-graphql-middleware
+          scrape_interval: 15s
+          static_configs: [{ targets: ['127.0.0.1:8378'] }]
+        # Media quality on the server side: quality score, jitter, forwarding latency, participants
+        - job_name: livekit-server
+          scrape_interval: 15s
+          static_configs: [{ targets: ['127.0.0.1:6789'] }]
+        # bbb-webrtc-sfu's LiveKit controller (agents, event receivers, recordings)
+        - job_name: bbb-webrtc-sfu-livekit
+          scrape_interval: 15s
+          static_configs: [{ targets: ['127.0.0.1:6759'] }]
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 250
+  batch: {}
+  resource:
+    attributes:
+      - { key: service.namespace, value: bigbluebutton, action: upsert }
+      - { key: deployment.environment, value: '${env:BBB_TELEMETRY_ENVIRONMENT}', action: upsert }
+exporters:
+  debug:
+    verbosity: basic
+  otlp/signoz:
+    endpoint: ingest.${env:SIGNOZ_REGION}.signoz.cloud:443
+    tls:
+      insecure: false
+    headers:
+      signoz-ingestion-key: ${env:SIGNOZ_INGESTION_KEY}
+service:
+  # The collector's own metrics would listen on :8888; nothing here reads them
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug, otlp/signoz]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug, otlp/signoz]

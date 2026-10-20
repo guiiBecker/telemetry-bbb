@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# bbb-telemetry: turns the BigBlueButton client telemetry (OTLP sink, ObserveRTC monitor and the
+# OpenTelemetry Collector) on or off for the whole server, from /etc/bigbluebutton/bbb-telemetry.yml.
+#
+#   bbb-telemetry apply [--restart]   apply the config file (bbb-telemetry.service runs it at boot)
+#   bbb-telemetry on [--observer]     set telemetry.enabled (and observer.enabled) to true, then apply
+#   bbb-telemetry off                 set telemetry.enabled to false, then apply
+#   bbb-telemetry status              show the config, what the client gets and the collector state
+#
+# Every apply logs one line saying whether telemetry is ENABLED or DISABLED to syslog/journal (tag
+# bbb-telemetry) and to /var/log/bigbluebutton/bbb-telemetry.log.
+# DRY_RUN=1 prints the commands instead of running them.
+set -euo pipefail
+
+CONFIG=${BBB_TELEMETRY_CONFIG:-/etc/bigbluebutton/bbb-telemetry.yml}
+SHARE=${BBB_TELEMETRY_SHARE:-/usr/local/share/bbb-telemetry}
+HTML5_CONFIG=${BBB_HTML5_CONFIG:-/etc/bigbluebutton/bbb-html5.yml}
+NGINX_SNIPPET=${BBB_TELEMETRY_NGINX:-/etc/bigbluebutton/nginx/telemetry.nginx}
+LOG_FILE=${BBB_TELEMETRY_LOG:-/var/log/bigbluebutton/bbb-telemetry.log}
+CONTAINER=${BBB_TELEMETRY_CONTAINER:-bbb-telemetry-otel}
+OTLP_PORT=${BBB_TELEMETRY_OTLP_PORT:-4318}
+DRY_RUN=${DRY_RUN:-0}
+
+log() {
+  local level=$1; shift
+  echo "bbb-telemetry: $*"
+  [ "$DRY_RUN" = 1 ] && return 0
+  logger -t bbb-telemetry -p "user.$level" -- "$*" 2>/dev/null || true
+  mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+  printf '%s %s %s\n' "$(date -Is)" "$level" "$*" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+die() { log err "$*"; exit 1; }
+
+run() {
+  if [ "$DRY_RUN" = 1 ]; then echo "+ $*"; else "$@"; fi
+}
+
+cfg() { yq e "$1" "$CONFIG"; }
+
+bool() { [ "$1" = "true" ] && echo true || echo false; }
+
+resolve() {
+  case "$1" in /*) echo "$1" ;; *) echo "$SHARE/$1" ;; esac
+}
+
+require_root() {
+  [ "$DRY_RUN" = 1 ] || [ "$(id -u)" -eq 0 ] || die "run as root (sudo bbb-telemetry $*)"
+}
+
+# Writes the client settings, keeping the file's inode, owner and mode (bbb-html5.yml is read by
+# bbb-apps-akka at boot; a replaced file could end up with an owner the service cannot read).
+# Prints "changed" when the file content changed.
+write_client_settings() {
+  local enabled=$1 log_to_server=$2 observer=$3 tmp
+  tmp=$(mktemp)
+  if [ -s "$HTML5_CONFIG" ]; then cp "$HTML5_CONFIG" "$tmp"; else echo '{}' > "$tmp"; fi
+  local exporter=none
+  [ "$enabled" = true ] && exporter=otlp
+  E=$enabled L=$log_to_server O=$observer X=$exporter yq e -i '
+    .public.app.telemetry.enabled = (strenv(E) == "true") |
+    .public.app.telemetry.exporter = strenv(X) |
+    .public.app.telemetry.logToServer = (strenv(L) == "true") |
+    .public.app.telemetry.webrtcMonitor.enabled = (strenv(O) == "true")
+  ' "$tmp"
+  if [ -f "$HTML5_CONFIG" ] && cmp -s "$tmp" "$HTML5_CONFIG"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "+ update $HTML5_CONFIG:" >&2
+    yq e '.public.app.telemetry' "$tmp" | sed 's/^/    /' >&2
+  else
+    [ -f "$HTML5_CONFIG" ] && cp -p "$HTML5_CONFIG" "$HTML5_CONFIG.bak-bbb-telemetry"
+    cat "$tmp" > "$HTML5_CONFIG"
+  fi
+  rm -f "$tmp"
+  echo changed
+}
+
+nginx_reload() {
+  if systemctl is-active --quiet nginx; then
+    run nginx -t -q && run systemctl reload nginx
+  fi
+}
+
+install_nginx_location() {
+  local src="$SHARE/nginx/telemetry.nginx"
+  [ -f "$src" ] || die "missing $src (run install.sh)"
+  if ! cmp -s "$src" "$NGINX_SNIPPET"; then
+    run install -m 644 "$src" "$NGINX_SNIPPET"
+    nginx_reload
+  fi
+}
+
+remove_nginx_location() {
+  if [ -e "$NGINX_SNIPPET" ]; then
+    run rm -f "$NGINX_SNIPPET"
+    nginx_reload
+  fi
+}
+
+collector_running() {
+  [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = true ]
+}
+
+# Starts the collector, or recreates it when its config, env file, image or memory changed.
+start_collector() {
+  local config env_file image memory hash current
+  config=$(resolve "$(cfg '.telemetry.collector.config // "otel/otel-collector-signoz.yaml"')")
+  env_file=$(cfg '.telemetry.collector.envFile // "/etc/bigbluebutton/bbb-telemetry.env"')
+  image=$(cfg '.telemetry.collector.image // "otel/opentelemetry-collector-contrib:0.120.0"')
+  memory=$(cfg '.telemetry.collector.memory // "300m"')
+  [ -f "$config" ] || { log err "collector config $config not found"; return 1; }
+
+  local env_args=()
+  if [ -f "$env_file" ]; then
+    env_args=(--env-file "$env_file")
+  elif grep -q 'env:SIGNOZ' "$config"; then
+    log err "$config needs SIGNOZ_REGION and SIGNOZ_INGESTION_KEY, but $env_file does not exist"
+    return 1
+  fi
+
+  hash=$( { cat "$config"; [ -f "$env_file" ] && cat "$env_file"; echo "$image $memory"; } | sha256sum | cut -c1-16)
+  current=$(docker inspect -f '{{index .Config.Labels "bbb-telemetry.hash"}}' "$CONTAINER" 2>/dev/null || true)
+  if collector_running && [ "$current" = "$hash" ]; then
+    return 0
+  fi
+
+  if ss -ltn "sport = :$OTLP_PORT" 2>/dev/null | grep -q LISTEN && ! collector_running; then
+    log err "port $OTLP_PORT is already in use by another process (an older collector such as hackweek-otel?)"
+    return 1
+  fi
+
+  run docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  run docker run -d --name "$CONTAINER" --restart unless-stopped --network host --memory "$memory" \
+    --label "bbb-telemetry.hash=$hash" "${env_args[@]}" \
+    -v "$config:/etc/otelcol-contrib/config.yaml:ro" "$image" >/dev/null
+  [ "$DRY_RUN" = 1 ] && return 0
+
+  # The receiver answers 4xx to an empty POST once it is up; 000 means nothing is listening yet
+  local code=000
+  for _ in $(seq 1 15); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$OTLP_PORT/v1/metrics" || true)
+    [ "$code" != 000 ] && break
+    sleep 1
+  done
+  if [ "$code" = 000 ] || ! collector_running; then
+    log err "collector did not start: $(docker logs --tail 2 "$CONTAINER" 2>&1 | tr '\n' ' ')"
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    return 1
+  fi
+}
+
+stop_collector() {
+  if docker inspect "$CONTAINER" >/dev/null 2>&1; then
+    run docker rm -f "$CONTAINER" >/dev/null
+  fi
+}
+
+restart_bbb() {
+  # bbb-apps-akka reads bbb-html5.yml only when it starts. Restarting it alone leaves bbb-web with
+  # meetings akka no longer knows, so both go together.
+  run systemctl restart bbb-apps-akka bbb-web
+}
+
+apply() {
+  local restart=false boot=false
+  for arg in "$@"; do
+    case "$arg" in
+      --restart) restart=true ;;
+      --boot) boot=true ;;
+      *) die "unknown option $arg" ;;
+    esac
+  done
+  require_root apply
+  [ -f "$CONFIG" ] || die "config $CONFIG not found (run install.sh)"
+  command -v yq >/dev/null || die "yq is required (it ships with BigBlueButton)"
+
+  local enabled log_to_server observer
+  enabled=$(bool "$(cfg '.telemetry.enabled // false')")
+  log_to_server=$(bool "$(cfg '.telemetry.logToServer // false')")
+  observer=$(bool "$(cfg '.telemetry.observer.enabled // false')")
+
+  if [ "$enabled" = false ] && [ "$observer" = true ]; then
+    log warning "observer.enabled is ignored because telemetry.enabled is false"
+  fi
+
+  if [ "$enabled" = true ]; then
+    if ! start_collector; then
+      log err "could not start the OTel collector; falling back to DISABLED so clients do not send to a dead endpoint"
+      enabled=false
+    else
+      install_nginx_location
+    fi
+  fi
+  if [ "$enabled" = false ]; then
+    observer=false
+    log_to_server=false
+    stop_collector
+    remove_nginx_location
+  fi
+
+  local changed
+  changed=$(write_client_settings "$enabled" "$log_to_server" "$observer")
+
+  if [ "$enabled" = true ]; then
+    local collector_config
+    collector_config=$(cfg '.telemetry.collector.config // "otel/otel-collector-signoz.yaml"')
+    log notice "BBB telemetry is ENABLED: client metrics$([ "$log_to_server" = true ] && echo ' and logs') go to nginx /api/telemetry, then to the OTel collector ($CONTAINER, $collector_config). ObserveRTC WebRTC monitor: $([ "$observer" = true ] && echo on || echo off)."
+  else
+    log notice "BBB telemetry is DISABLED: the OTel collector is not running and the client loads neither the OTLP sink nor ObserveRTC, so no telemetry metrics or logs are generated."
+  fi
+
+  if [ "$changed" = changed ] && [ "$boot" = false ]; then
+    if [ "$restart" = true ]; then
+      log info "client settings changed; restarting bbb-apps-akka and bbb-web (meetings in progress end)"
+      restart_bbb
+    else
+      log warning "client settings changed in $HTML5_CONFIG; they reach new meetings only after 'systemctl restart bbb-apps-akka bbb-web' (or apply --restart)"
+    fi
+  fi
+}
+
+set_switch() {
+  local enabled=$1 observer=$2
+  require_root "$([ "$enabled" = true ] && echo on || echo off)"
+  [ -f "$CONFIG" ] || die "config $CONFIG not found (run install.sh)"
+  local expr=".telemetry.enabled = $enabled"
+  [ "$observer" = true ] && expr="$expr | .telemetry.observer.enabled = true"
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "+ yq e -i '$expr' $CONFIG"
+  else
+    local tmp; tmp=$(mktemp)
+    cp "$CONFIG" "$tmp" && yq e -i "$expr" "$tmp" && cat "$tmp" > "$CONFIG"
+    rm -f "$tmp"
+  fi
+}
+
+status() {
+  echo "config ($CONFIG):"
+  if [ -f "$CONFIG" ]; then cfg '.telemetry' | sed 's/^/  /'; else echo "  (missing)"; fi
+  echo "client settings ($HTML5_CONFIG, public.app.telemetry):"
+  if [ -r "$HTML5_CONFIG" ]; then
+    yq e '.public.app.telemetry // "(not set: package default, disabled)"' "$HTML5_CONFIG" | sed 's/^/  /'
+  else
+    echo "  (not readable)"
+  fi
+  echo "collector ($CONTAINER):"
+  docker ps -a --filter "name=^${CONTAINER}$" --format '  {{.Status}}  {{.Image}}' 2>/dev/null | grep . || echo "  not running"
+  echo "nginx location: $([ -e "$NGINX_SNIPPET" ] && echo "$NGINX_SNIPPET" || echo none)"
+  if [ -r "$LOG_FILE" ]; then
+    echo "last log lines ($LOG_FILE):"
+    tail -n 3 "$LOG_FILE" | sed 's/^/  /'
+  fi
+}
+
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+case "$cmd" in
+  apply) apply "$@" ;;
+  on)
+    observer=false
+    [ "${1:-}" = --observer ] && { observer=true; shift; }
+    set_switch true "$observer"
+    apply --restart "$@"
+    ;;
+  off)
+    set_switch false false
+    apply --restart "$@"
+    ;;
+  status) status ;;
+  *)
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

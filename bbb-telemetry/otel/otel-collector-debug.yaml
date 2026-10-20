@@ -1,0 +1,48 @@
+# OpenTelemetry Collector for local checks: receives everything the signoz config does, sends nothing
+# out, and prints every data point and log record. Read it with: docker logs -f bbb-telemetry-otel
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: bbb-graphql-middleware
+          scrape_interval: 15s
+          static_configs: [{ targets: ['127.0.0.1:8378'] }]
+        - job_name: livekit-server
+          scrape_interval: 15s
+          static_configs: [{ targets: ['127.0.0.1:6789'] }]
+        - job_name: bbb-webrtc-sfu-livekit
+          scrape_interval: 15s
+          static_configs: [{ targets: ['127.0.0.1:6759'] }]
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 250
+  batch: {}
+  resource:
+    attributes:
+      - { key: service.namespace, value: bigbluebutton, action: upsert }
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  # The collector's own metrics would listen on :8888; nothing here reads them
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    metrics/client:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug]
+    metrics/server:
+      receivers: [prometheus]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug]

@@ -1,0 +1,15 @@
+[Unit]
+Description=BigBlueButton client telemetry switch (OTel collector + ObserveRTC), from /etc/bigbluebutton/bbb-telemetry.yml
+Documentation=file:///usr/local/share/bbb-telemetry/README.md
+Wants=docker.service
+After=docker.service network-online.target
+# bbb-apps-akka reads bbb-html5.yml only at startup, so the switch is applied before it starts
+Before=bbb-apps-akka.service bbb-web.service nginx.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/bbb-telemetry apply --boot
+
+[Install]
+WantedBy=multi-user.target
