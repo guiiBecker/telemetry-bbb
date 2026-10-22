@@ -36,7 +36,11 @@ interface ClientMonitorLike {
 declare global {
   interface Window {
     BBBObserveRTC?: {
-      ClientMonitor: new (config: { collectingPeriodInMs: number }) => ClientMonitorLike;
+      ClientMonitor: new (config: {
+        collectingPeriodInMs: number;
+        integrateNavigatorMediaDevices?: boolean;
+        watchTabVisibility?: boolean;
+      }) => ClientMonitorLike;
     };
   }
 }
@@ -238,7 +242,13 @@ const startWebrtcMonitor = (): void => {
     .then(() => {
       const ClientMonitor = window.BBBObserveRTC?.ClientMonitor;
       if (!ClientMonitor) throw new Error('BBBObserveRTC.ClientMonitor missing');
-      const monitor = new ClientMonitor({ collectingPeriodInMs: webrtcMonitor.collectingPeriodMs });
+      // Both default to true: the first replaces navigator.mediaDevices.getUserMedia and lists devices
+      // with their labels, the second watches the tab. The monitor only reads stats here.
+      const monitor = new ClientMonitor({
+        collectingPeriodInMs: webrtcMonitor.collectingPeriodMs,
+        integrateNavigatorMediaDevices: false,
+        watchTabVisibility: false,
+      });
 
       attach = (pc, source) => {
         const known = new Set(monitor.peerConnections);

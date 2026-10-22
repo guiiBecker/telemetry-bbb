@@ -118,6 +118,9 @@ The library (about 68 KB gzipped) lives in its own file under `public/compatibil
 downloaded when the flag is on, so other sessions do not pay for it. The current values show up in
 `bbbTelemetry.dump().webrtc`.
 
+The monitor only reads connection stats. Its `getUserMedia` integration and tab-visibility watcher are
+turned off, so it never wraps media capture or lists devices.
+
 ### HTTP/2 versus HTTP/1.1
 
 Every request entry carries the protocol the browser actually used (`nextHopProtocol`). If the
