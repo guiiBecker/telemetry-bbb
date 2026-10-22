@@ -5,6 +5,8 @@ receivers:
     protocols:
       http:
         endpoint: 127.0.0.1:4318
+        # Exposes the Meeting-Id and User-Id headers nginx sets to attributes/session
+        include_metadata: true
   prometheus:
     config:
       scrape_configs:
@@ -22,6 +24,43 @@ processors:
     check_interval: 1s
     limit_mib: 250
   batch: {}
+  # Client data comes from browsers, so it is filtered and capped before it is forwarded:
+  # only bbb.client.* metrics and bbb-html5-client logs, bounded attributes, no huge log bodies.
+  filter/client:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'not IsMatch(name, "^bbb\\.client\\.")'
+    logs:
+      log_record:
+        - 'resource.attributes["service.name"] != "bbb-html5-client"'
+        - 'Len(body) > 32768'
+  transform/client:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - limit(attributes, 16, [])
+          - truncate_all(attributes, 256)
+      - context: datapoint
+        statements:
+          - limit(attributes, 8, [])
+          - truncate_all(attributes, 128)
+    log_statements:
+      - context: resource
+        statements:
+          - limit(attributes, 16, [])
+          - truncate_all(attributes, 256)
+      - context: log
+        statements:
+          - limit(attributes, 24, [])
+          - truncate_all(attributes, 512)
+  # Meeting and user ids set by nginx after authorization (never by the client); logs only, so they
+  # never become metric labels. Must run before batch, which drops the request context.
+  attributes/session:
+    actions:
+      - { key: bbb.meeting.id, from_context: metadata.meeting-id, action: upsert }
+      - { key: bbb.user.id, from_context: metadata.user-id, action: upsert }
   resource:
     attributes:
       - { key: service.namespace, value: bigbluebutton, action: upsert }
@@ -36,7 +75,7 @@ service:
   pipelines:
     metrics/client:
       receivers: [otlp]
-      processors: [memory_limiter, resource, batch]
+      processors: [memory_limiter, filter/client, transform/client, resource, batch]
       exporters: [debug]
     metrics/server:
       receivers: [prometheus]
@@ -44,5 +83,5 @@ service:
       exporters: [debug]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, resource, batch]
+      processors: [memory_limiter, filter/client, transform/client, attributes/session, resource, batch]
       exporters: [debug]

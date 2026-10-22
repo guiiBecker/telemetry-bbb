@@ -60,7 +60,8 @@ So **neither OpenTelemetry nor ObserveRTC generates any metric or log.**
 | `bbb-telemetry.env.example` | Collector secrets (SigNoz region and ingestion key). Installed as `/etc/bigbluebutton/bbb-telemetry.env`, mode 600. |
 | `otel/otel-collector-signoz.yaml` | Collector config that forwards to SigNoz Cloud. |
 | `otel/otel-collector-debug.yaml` | Collector config that sends nothing out and prints everything to `docker logs`. |
-| `nginx/telemetry.nginx` | `location /api/telemetry/`, authorized with the session token, the same way as `/graphql`. |
+| `nginx/telemetry.nginx` | `location /api/telemetry/`, authorized with the session token, the same way as `/graphql`, and rate limited. |
+| `nginx/telemetry-zones.conf` | The rate-limit zones (10 requests a minute per session, 300 per IP). Installed as `/etc/nginx/conf.d/bbb-telemetry.conf`, because zones must be in the `http` context. |
 
 Elsewhere in the branch:
 
@@ -404,8 +405,9 @@ channel.
 - a random session id per tab;
 - the error message, cut at 200 characters, on incidents only.
 
-**Never sent:**
-- meeting or user ids;
+**Never sent by the client:**
+- meeting or user ids (the collector adds them to log records from the headers nginx sets after
+  authorization, as `bbb.meeting.id` and `bbb.user.id`; never to metrics);
 - tokens;
 - typed text, chat or names;
 - presentation content;

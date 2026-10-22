@@ -1,10 +1,18 @@
 # /api/telemetry -> local OpenTelemetry Collector (OTLP/HTTP), authorized like /graphql
+# The rate-limit zones live in /etc/nginx/conf.d/bbb-telemetry.conf (http context).
 location /api/telemetry/ {
+    # A client posts metrics every 30 s plus a few logs; bursts cover the pagehide flush.
+    # Per IP too, so requests without a token cannot hammer bbb-web through auth_request.
+    limit_req zone=bbb_telemetry_session burst=10 nodelay;
+    limit_req zone=bbb_telemetry_ip burst=100 nodelay;
+    limit_req_status 429;
+
     auth_request /bigbluebutton/connection/checkGraphqlAuthorization;
     auth_request_set $meeting_id $sent_http_meeting_id;
     auth_request_set $user_id $sent_http_user_id;
 
     client_max_body_size 128k;
+    # The collector adds these to logs only, so abuse can be traced to a session
     proxy_set_header Meeting-Id $meeting_id;
     proxy_set_header User-Id $user_id;
     proxy_pass http://127.0.0.1:4318/;

@@ -12,7 +12,7 @@ command -v docker >/dev/null || { echo "docker not found (needed for the OTel co
 install -m 755 "$DIR/bin/bbb-telemetry" /usr/local/bin/bbb-telemetry
 install -d "$SHARE/otel" "$SHARE/nginx"
 install -m 644 "$DIR"/otel/*.yaml "$SHARE/otel/"
-install -m 644 "$DIR/nginx/telemetry.nginx" "$SHARE/nginx/"
+install -m 644 "$DIR/nginx/telemetry.nginx" "$DIR/nginx/telemetry-zones.conf" "$SHARE/nginx/"
 install -m 644 "$DIR/README.md" "$SHARE/README.md"
 [ -f /etc/bigbluebutton/bbb-telemetry.yml ] || install -m 644 "$DIR/config.yml" /etc/bigbluebutton/bbb-telemetry.yml
 [ -f /etc/bigbluebutton/bbb-telemetry.env ] || install -m 600 "$DIR/bbb-telemetry.env.example" /etc/bigbluebutton/bbb-telemetry.env

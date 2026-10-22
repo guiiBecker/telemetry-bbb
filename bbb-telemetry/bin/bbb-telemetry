@@ -16,6 +16,7 @@ CONFIG=${BBB_TELEMETRY_CONFIG:-/etc/bigbluebutton/bbb-telemetry.yml}
 SHARE=${BBB_TELEMETRY_SHARE:-/usr/local/share/bbb-telemetry}
 HTML5_CONFIG=${BBB_HTML5_CONFIG:-/etc/bigbluebutton/bbb-html5.yml}
 NGINX_SNIPPET=${BBB_TELEMETRY_NGINX:-/etc/bigbluebutton/nginx/telemetry.nginx}
+NGINX_ZONES=${BBB_TELEMETRY_NGINX_ZONES:-/etc/nginx/conf.d/bbb-telemetry.conf}
 LOG_FILE=${BBB_TELEMETRY_LOG:-/var/log/bigbluebutton/bbb-telemetry.log}
 CONTAINER=${BBB_TELEMETRY_CONTAINER:-bbb-telemetry-otel}
 OTLP_PORT=${BBB_TELEMETRY_OTLP_PORT:-4318}
@@ -85,17 +86,25 @@ nginx_reload() {
 }
 
 install_nginx_location() {
-  local src="$SHARE/nginx/telemetry.nginx"
+  local src="$SHARE/nginx/telemetry.nginx" zones="$SHARE/nginx/telemetry-zones.conf" changed=false
   [ -f "$src" ] || die "missing $src (run install.sh)"
+  [ -f "$zones" ] || die "missing $zones (run install.sh)"
+  # Zones first: the location refers to them
+  if ! cmp -s "$zones" "$NGINX_ZONES"; then
+    run install -m 644 "$zones" "$NGINX_ZONES"
+    changed=true
+  fi
   if ! cmp -s "$src" "$NGINX_SNIPPET"; then
     run install -m 644 "$src" "$NGINX_SNIPPET"
-    nginx_reload
+    changed=true
   fi
+  [ "$changed" = true ] && nginx_reload
+  return 0
 }
 
 remove_nginx_location() {
-  if [ -e "$NGINX_SNIPPET" ]; then
-    run rm -f "$NGINX_SNIPPET"
+  if [ -e "$NGINX_SNIPPET" ] || [ -e "$NGINX_ZONES" ]; then
+    run rm -f "$NGINX_SNIPPET" "$NGINX_ZONES"
     nginx_reload
   fi
 }

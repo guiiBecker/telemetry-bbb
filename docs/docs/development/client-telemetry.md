@@ -188,10 +188,19 @@ SDK; the payload is serialized directly.
 The request carries the user's session token in the `x-session-token` header, so nginx can authorize
 it with the same check as `/graphql` and pass it to the local collector. The token is only sent to this
 page's origin and to the GraphQL host; for any other `otlpUrl` the client posts without it (and without
-cookies) and logs `telemetry_untrusted_otlp_url` once. Add a location such as:
+cookies) and logs `telemetry_untrusted_otlp_url` once. Add rate-limit zones in the `http` context and a
+location such as:
 
 ```nginx
+# http context, e.g. /etc/nginx/conf.d/bbb-telemetry.conf
+limit_req_zone $http_x_session_token zone=bbb_telemetry_session:10m rate=10r/m;
+limit_req_zone $binary_remote_addr zone=bbb_telemetry_ip:10m rate=300r/m;
+
 location /api/telemetry/ {
+    limit_req zone=bbb_telemetry_session burst=10 nodelay;
+    limit_req zone=bbb_telemetry_ip burst=100 nodelay;
+    limit_req_status 429;
+
     auth_request /bigbluebutton/connection/checkGraphqlAuthorization;
     auth_request_set $meeting_id $sent_http_meeting_id;
     auth_request_set $user_id $sent_http_user_id;
@@ -203,8 +212,11 @@ location /api/telemetry/ {
 }
 ```
 
-The meeting and user ids come from the server, never from the client. If they are needed in the
-backend, promote the headers to attributes in the collector, and keep them out of metric labels.
+The meeting and user ids come from the server, never from the client. The bundled collector configs
+(`bbb-telemetry/otel/`) add them to log records only (`bbb.meeting.id`, `bbb.user.id`), so abuse can be
+traced to a session, and keep them out of metric labels. Because browsers send this data, those configs
+also drop any metric not named `bbb.client.*` and any log not from `bbb-html5-client` or larger than
+32 KB, and cap the number and length of attributes.
 
 In a cluster proxy setup, the client is served by the proxy. Set `otlpUrl` to an absolute URL on a
 host that can authorize the session.
