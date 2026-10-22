@@ -46,7 +46,7 @@ All keys, with their defaults:
 | `flushIntervalMs` | `30000` | How often summaries and metrics are sent, when a sink is on. |
 | `logToServer` | `false` | Send a periodic p50/p95/max summary through `clientLog.external`, which must be enabled too, and the repro trail when an error happens. See [Repro trail](#repro-trail). |
 | `exporter` | `none` | `otlp` sends OpenTelemetry metrics to `otlpUrl`. See [Sending metrics to a monitoring backend](#sending-metrics-to-a-monitoring-backend). |
-| `otlpUrl` | `/api/telemetry` | Base URL of the OTLP/HTTP endpoint. Relative URLs go to the server that serves the client. |
+| `otlpUrl` | `/api/telemetry` | Base URL of the BBB `/api/telemetry` location. Relative URLs go to the server that serves the client. Never a monitoring backend's own ingest URL: the session token is only sent to this page's origin and the GraphQL host. |
 | `thresholds.slowRenderMs` | `16` | A render slower than one frame at 60 fps is listed as slow. |
 | `thresholds.slowRequestMs` | `1000` | Slow HTTP request. |
 | `thresholds.slowGraphqlMs` | `500` | Slow GraphQL operation. |
@@ -183,7 +183,9 @@ go to `<otlpUrl>/v1/logs` (see [Repro trail](#repro-trail)). The client does not
 SDK; the payload is serialized directly.
 
 The request carries the user's session token in the `x-session-token` header, so nginx can authorize
-it with the same check as `/graphql` and pass it to the local collector. Add a location such as:
+it with the same check as `/graphql` and pass it to the local collector. The token is only sent to this
+page's origin and to the GraphQL host; for any other `otlpUrl` the client posts without it (and without
+cookies) and logs `telemetry_untrusted_otlp_url` once. Add a location such as:
 
 ```nginx
 location /api/telemetry/ {

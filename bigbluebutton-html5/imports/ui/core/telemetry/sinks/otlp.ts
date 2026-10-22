@@ -1,3 +1,5 @@
+import BBBWeb from '/imports/api/bbb-web-api';
+import logger from '/imports/startup/client/logger';
 import Auth from '/imports/ui/services/auth';
 import deviceInfo from '/imports/utils/deviceInfo';
 import type { ReproTrail } from '../actionTrail';
@@ -99,18 +101,48 @@ export const buildMetricsPayload = (snapshot: SeriesSnapshot[], now: number, gau
   };
 };
 
+// The session token only goes where the client already sends it: this page's origin and the GraphQL
+// host (another host in cluster setups). An otlpUrl pointing anywhere else, such as a backend's own
+// ingest URL, gets the data without the token or the cookies.
+const trustedOrigins = new Set([window.location.origin]);
+let warnedUntrusted = false;
+
+const trustGraphqlOrigin = (): void => {
+  BBBWeb.index().then(({ data }) => {
+    if (!data.graphqlWebsocketUrl) return;
+    const graphql = new URL(data.graphqlWebsocketUrl, window.location.href);
+    graphql.protocol = graphql.protocol === 'ws:' ? 'http:' : 'https:';
+    trustedOrigins.add(graphql.origin);
+  }).catch(() => {
+    // Without the index, only this page's origin is trusted
+  });
+};
+
+const isTrusted = (url: URL): boolean => {
+  if (trustedOrigins.has(url.origin)) return true;
+  if (!warnedUntrusted) {
+    warnedUntrusted = true;
+    logger.warn({
+      logCode: 'telemetry_untrusted_otlp_url',
+      extraInfo: { otlpHost: url.host },
+    }, 'Telemetry otlpUrl is not a BBB host; sending without the session token');
+  }
+  return false;
+};
+
 const post = (path: string, body: string): void => {
-  const url = `${getConfig().otlpUrl.replace(/\/$/, '')}${path}`;
+  const url = new URL(`${getConfig().otlpUrl.replace(/\/$/, '')}${path}`, window.location.href);
   // The /api/telemetry location authorizes with the same check as /graphql: the x-session-token
   // header plus the bbb-web session cookie. sendBeacon cannot set headers, so keepalive fetch it is.
+  const trusted = isTrusted(url);
   fetch(url, {
     method: 'POST',
     body,
-    credentials: 'include',
+    credentials: trusted ? 'include' : 'omit',
     keepalive: body.length < KEEPALIVE_MAX_BYTES,
     headers: {
       'Content-Type': 'application/json',
-      'x-session-token': (Auth.sessionToken as string | null) ?? '',
+      ...(trusted ? { 'x-session-token': (Auth.sessionToken as string | null) ?? '' } : {}),
     },
   }).catch(() => {
     // Telemetry must never surface errors to the user; the next flush retries with cumulative data
@@ -171,6 +203,7 @@ export const sendIncidentLog = (trigger: IncidentTrigger, error: IncidentError, 
 
 const startOtlpSink = (): void => {
   let lastSentCount = 0;
+  trustGraphqlOrigin();
 
   const flush = () => {
     const count = totalCount() + gaugeUpdateCount();

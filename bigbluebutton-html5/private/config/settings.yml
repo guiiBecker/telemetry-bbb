@@ -175,7 +175,9 @@ public:
       logToServer: false
       # none | otlp. otlp POSTs OTLP/HTTP JSON metrics to otlpUrl every flushIntervalMs
       exporter: none
-      # Same-origin path by default (see the /api/telemetry nginx location)
+      # Same-origin path by default (see the /api/telemetry nginx location). Must be a BBB /api/telemetry
+      # location, never a backend's ingest URL: the session token only goes to this page's origin and
+      # the GraphQL host, so any other host gets the data without it
       otlpUrl: /api/telemetry
       # Fraction of sessions that collect, decided once per session
       sampleRate: 1
