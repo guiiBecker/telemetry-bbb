@@ -1,8 +1,9 @@
-import scrubUrl from './scrub';
+import scrubUrl, { annotatedAncestor } from './scrub';
 
 // Repro trail: the last user actions before a problem, to turn "cannot reproduce" into a test.
 // One rule: record the identity of the control, never its content. No value, textContent or
-// aria-label (it can carry user names), no typed characters, no mutation variables.
+// aria-label (it can carry user names), no typed characters, no mutation variables, and no
+// data-test built from user content (see annotatedAncestor).
 
 const TRAIL_SIZE = 50;
 
@@ -53,7 +54,7 @@ type TargetFields = Pick<TrailAction, 'dataTest' | 'ownDataTest' | 'tag' | 'role
 const describeTarget = (target: EventTarget | null): TargetFields => {
   if (!(target instanceof Element)) return { dataTest: '', tag: '' };
   const interactive = target.closest(INTERACTIVE) ?? target;
-  const annotated = target.closest('[data-test]');
+  const annotated = annotatedAncestor(target);
   const role = interactive.getAttribute('role');
   return {
     dataTest: annotated?.getAttribute('data-test') ?? '',

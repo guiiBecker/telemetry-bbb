@@ -1,5 +1,6 @@
 import { recordTelemetry, toEpochMs } from '../recorder';
 import { InteractionEntry } from '../types';
+import { annotatedAncestor } from '../scrub';
 
 // Jank the React Profiler cannot attribute: long tasks (Chromium only) and slow interactions
 
@@ -13,7 +14,7 @@ const supports = (type: string): boolean => (
 
 const dataTestOf = (target: Node | null): string => {
   if (!(target instanceof Element)) return '';
-  return target.closest('[data-test]')?.getAttribute('data-test') ?? '';
+  return annotatedAncestor(target)?.getAttribute('data-test') ?? '';
 };
 
 const startLongTaskObserver = (): void => {

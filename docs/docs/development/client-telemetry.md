@@ -88,7 +88,7 @@ bbbTelemetry.clear()  // discard measurements and the trail
 | Kind | Source | Attribution |
 |---|---|---|
 | `render` | `React.Profiler` around the main areas: app, nav bar, sidebar navigation, each sidebar panel, webcams, presentation, screenshare, external video, actions bar, plugins, layout engine | subtree id and render phase |
-| `request` | `PerformanceObserver` on resource and navigation timing | path (query string dropped, long ids replaced by `:id`), initiator, `nextHopProtocol`, TTFB |
+| `request` | `PerformanceObserver` on resource and navigation timing | path on this server (query string dropped, long ids replaced by `:id`), host only for other servers, initiator, `nextHopProtocol`, TTFB |
 | `graphql` | Apollo link on every operation | `operationName`, query, mutation or subscription. Subscriptions are timed to their first result. Also WebSocket connect and reconnect times. |
 | `longtask` | `PerformanceObserver` on long tasks (Chromium only) | browser attribution (`self`, `same-origin`, …) |
 | `interaction` | Event Timing API, one entry per interaction | `data-test` of the control, event type |
@@ -257,10 +257,15 @@ The client keeps the last 50 user actions while telemetry is on:
 
 | Recorded | Never recorded |
 |---|---|
-| clicks, with the `data-test`, tag and role of the control | typed text, field values, element text, `aria-label` |
+| clicks, with the `data-test`, tag and role of the control | typed text, field values, element text, `aria-label`, `data-test` values built from user content |
 | named keys (<kbd>Enter</kbd>, <kbd>Esc</kbd>, arrows, <kbd>Tab</kbd>…) and shortcuts outside text fields | character keys, and shortcuts typed inside text fields |
 | mutation names, with repeated ones folded into a count | mutation variables |
 | the time between actions, the client build, viewport, language and user agent | user names, meeting content, session tokens |
+
+A few `data-test` values are built from user content (breakout room names). Those elements carry
+`data-telemetry-redact`, and any `data-test` that is not shaped like an id is skipped too: the trail and
+the `interaction` metric name the nearest safe ancestor instead. Mark new elements the same way when
+their `data-test` includes user content.
 
 Copy the trail from the debug window or with `bbbTelemetry.trail()`.
 

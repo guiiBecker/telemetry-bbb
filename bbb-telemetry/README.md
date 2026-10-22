@@ -398,8 +398,8 @@ channel.
 - GraphQL operation names;
 - React subtree ids;
 - the HTTP protocol;
-- the controls' `data-test`;
-- request paths, **without query strings and with ids replaced by `:id`**;
+- the controls' `data-test`, except ones built from user content (marked `data-telemetry-redact`, or not shaped like an id);
+- request paths on this server, **without query strings and with ids replaced by `:id`**; only the host for other servers;
 - the user agent;
 - a random session id per tab;
 - the error message, cut at 200 characters, on incidents only.
