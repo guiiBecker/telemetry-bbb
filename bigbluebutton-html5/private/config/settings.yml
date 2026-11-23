@@ -176,6 +176,30 @@ public:
     remainingTimeThresholdInMinutes: 6
     remainingTimeAlertThresholdArray: [1,5]
     enableDebugWindow: true
+    # Client performance telemetry: slow React subtrees, HTTP requests, GraphQL operations
+    # and long tasks. Off by default; with enabled: false no observer is registered.
+    # Inspect it in the debug window or with window.bbbTelemetry.dump() in the console.
+    telemetry:
+      enabled: false
+      # none | otlp. otlp POSTs OTLP/HTTP JSON metrics to otlpUrl every flushIntervalMs
+      exporter: none
+      # Same-origin path by default (see the /api/telemetry nginx location). Must be a BBB /api/telemetry
+      # location, never a backend's ingest URL: the session token only goes to this page's origin and
+      # the GraphQL host, so any other host gets the data without it
+      otlpUrl: /api/telemetry
+      # Fraction of sessions that collect, decided once per session
+      sampleRate: 1
+      # Slow entries kept per kind for the debug window
+      bufferSize: 200
+      flushIntervalMs: 30000
+      thresholds:
+        slowRenderMs: 16
+        slowRequestMs: 1000
+        slowGraphqlMs: 500
+        longTaskMs: 50
+        slowInteractionMs: 200
+        # Plugin load, first UI, panel open and data channel round trip
+        slowPluginMs: 500
     # Warning: increasing the limit of breakout rooms per meeting
     # can generate excessive overhead to the server. We recommend
     # this value to be kept under 16.
